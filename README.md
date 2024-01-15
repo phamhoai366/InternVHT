@@ -1,2 +1,2 @@
 # network attack
-sudo ./main <iface name> <vitcim's IP> <gateway's IP> 
+sudo ./main <iface ...> <vitcim's IP> <gateway's IP> 
