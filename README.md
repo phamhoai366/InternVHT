@@ -2,7 +2,6 @@
 sudo ./main <iface ...> <vitcim's IP> <gateway's IP> 
 
 handshake type: 
-
 0x00: HelloRequest
 0x01: ClientHello
 0x02: ServerHello
