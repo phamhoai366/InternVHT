@@ -1,6 +1,13 @@
 # network attack
 sudo ./main <iface ...> <vitcim's IP> <gateway's IP> 
 
+content type:
+
+20 (hex 0x14): Alert
+21 (hex 0x15): Handshake
+22 (hex 0x16): Application Data
+23 (hex 0x17): Heartbeat
+
 handshake type: 
 
 0x00: HelloRequest
