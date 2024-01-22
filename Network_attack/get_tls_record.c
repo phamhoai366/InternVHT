@@ -135,6 +135,49 @@ void get_tls_record(unsigned char* buffer, int size) {
     }
 }
 
+void get_clienthello_packet(unsigned char *buffer, int size){
+    // Skip the IP and TCP headers
+    struct iphdr *iph = (struct iphdr *)buffer;
+    unsigned short iphdrlen = iph->ihl*4;
+    struct tcphdr *tcph = (struct tcphdr *)(buffer + iphdrlen);
+    unsigned short tcphdrlen = tcph->doff*4;
+
+    // Check if the packet is long enough to contain a TLS record
+    if (size < iphdrlen + tcphdrlen + sizeof(TLSRecord)) {
+        printf("Packet is too short for a TLS record\n");
+        return;
+    }
+
+    // Get the TLS record
+    TLSRecord *tls = (TLSRecord*)(buffer + iphdrlen + tcphdrlen);
+    
+    printf("| - Content type: 0x%02X\n", tls->content_type);
+    printf("| - Version: 0x%04X\n", ntohs(tls->version));
+    printf("| - Length: %d\n", ntohs(tls->length));
+    if(tls->content_type == 0x16){
+        printf("| --> TLS handshake\n");
+    }
+    // Get the Client Hello
+    ClientHello *client_hello = (ClientHello*)(buffer + iphdrlen + tcphdrlen + sizeof(TLSRecord));
+    printf("| - Handshake type: 0x%02X\n", client_hello->handshake_type);
+    printf("| - Length: %d\n", ntohs(client_hello->length));
+    printf("| - Version: 0x%04X\n", ntohs(client_hello->version));
+    printf("| - Random: ");
+    for (int i = 0; i < 32; i++) {
+        printf("%02X", client_hello->random[i]);
+    }
+    printf("\n");
+    printf("| - Session ID length: %d\n", client_hello->session_id_length);
+    printf("| - Cipher suites length: %d\n", client_hello->cipher_suites_length);
+    printf("| - Compression methods length: %d\n", client_hello->compression_methods_length);
+    printf("| - Extensions length: %d\n", ntohs(client_hello->extensions_length));
+    printf("| - Extensions: ");
+    // for (int i = 0; i < ntohs(client_hello->extensions_length); i++) {
+    //     printf("%02X", client_hello->extensions[i]);
+    // }
+    printf("\n");
+}
+
 int main() {
     int sockfd;
     char buffer[MAX_PACKET_SIZE];
