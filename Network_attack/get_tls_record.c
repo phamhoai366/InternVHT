@@ -99,10 +99,19 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <sys/socket.h>
+#include <linux/if_packet.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <unistd.h>
+#include <string.h>
+#include <net/if.h>
+#include <sys/types.h>
+#include <linux/if_ether.h> 
 #include <netinet/ip.h>
-#include <netinet/tcp.h>
+#include <netinet/ether.h>
+#include <linux/tcp.h>
+
 
 #define MAX_PACKET_SIZE 65536
 
@@ -132,30 +141,41 @@ typedef struct __attribute__((packed)) {
     uint8_t extensions[32];  // Extensions (variable length)
 } ClientHello;
 
+
 void get_tls_record(unsigned char* buffer, int size) {
-    // Skip the IP and TCP headers
-    struct iphdr *iph = (struct iphdr *)buffer;
+    // Skip the Ethernet, IP and TCP headers
+    struct ethhdr * eth = (struct ethhdr *)(buffer);
+    unsigned short ethhdrlen = sizeof(struct ethhdr);
+    struct iphdr *iph = (struct iphdr *)(buffer + ethhdrlen);
     unsigned short iphdrlen = iph->ihl*4;
-    struct tcphdr *tcph = (struct tcphdr *)(buffer + iphdrlen);
+    struct tcphdr *tcph = (struct tcphdr *)(buffer + iphdrlen + ethhdrlen);
     unsigned short tcphdrlen = tcph->doff*4;
 
     // Check if the packet is long enough to contain a TLS record
-    if (size < iphdrlen + tcphdrlen + sizeof(TLSRecord)) {
+    if (size < iphdrlen + tcphdrlen + sizeof(TLSRecord) + ethhdrlen) {
         printf("Packet is too short for a TLS record\n");
         return;
     }
 
     // Get the TLS record
-    TLSRecord *tls = (TLSRecord*)(buffer + iphdrlen + tcphdrlen);
-    printf("| - Content type: 0x%02X\n", tls->content_type);
-    printf("| - Version: 0x%04X\n", ntohs(tls->version));
-    printf("| - Length: %d\n", ntohs(tls->length));
+    TLSRecord *tls = (TLSRecord*)(buffer + iphdrlen + tcphdrlen + ethhdrlen);
     if(tls->content_type == 0x16){
         printf("TLS handshake\n");
-    }
+        printf("Content type: 0x%02x\n", tls->content_type);
+        printf("Version: 0x%04X\n", ntohs(tls->version));
+        printf("Length: %d\n", ntohs(tls->length));
 
-    if(tls->content_type == 0x16){
-        parse_client_hello(buffer + iphdrlen + tcphdrlen + sizeof(TLSRecord), size - iphdrlen - tcphdrlen - sizeof(TLSRecord));
+        // for (int i = 0; i < ntohs(tls->length); i++){
+        //     printf("%02X ", buffer[i]);
+        // }
+
+        for (int i = 0; i < size; i++){
+            printf("%02X ", buffer[i]);
+        }
+
+        printf("\n");
+        parse_client_hello(buffer + iphdrlen + tcphdrlen + sizeof(TLSRecord) + ethhdrlen, size - iphdrlen - tcphdrlen - sizeof(TLSRecord) - ethhdrlen);
+
     }
 }
 
@@ -169,22 +189,23 @@ void parse_client_hello(unsigned char *buffer, int size){
     ClientHello *client_hello = (ClientHello*)buffer;
 
     // Check if the handshake type is ClientHello
-    if (client_hello->handshake_type != 1) {
-        printf("Not a ClientHello\n");
+    if (client_hello->handshake_type == 0x01) {
+        // Print the ClientHello details
+        printf("\nHandshake type: 0x%02x\n", client_hello->handshake_type);
+        printf("Length: %d\n", ntohs(client_hello->length));
+        printf("Version: 0x%04X\n", ntohs(client_hello->version));
+        printf("Random: ");
+        for (int i = 0; i < 32; i++) {
+            printf("%02X", client_hello->random[i]);
+        }
+        printf("\n");
+        printf("Session ID length: %d\n", client_hello->session_id_length);
+        printf("Cipher suites length: %d\n", client_hello->cipher_suites_length);
+        printf("Compression methods length: %d\n", client_hello->compression_methods_length);
+        printf("Extensions length: %d\n", ntohs(client_hello->extensions_length));
+        printf("Extensions: ");
         return;
     }
-
-    // Print the ClientHello details
-    printf("Handshake type: %d\n", client_hello->handshake_type);
-    printf("Version: %d\n", ntohs(client_hello->version));
-    printf("Random: ");
-    for (int i = 0; i < 32; i++) {
-        printf("%02X", client_hello->random[i]);
-    }
-    printf("\n");
-    printf("Session ID length: %d\n", client_hello->session_id_length);
-
-
 }
 
 void get_clienthello_packet(unsigned char *buffer, int size){
@@ -231,26 +252,35 @@ void get_clienthello_packet(unsigned char *buffer, int size){
     }
 }
 
-int main() {
+int main(){
     int sockfd;
-    char buffer[MAX_PACKET_SIZE];
+    unsigned char buffer[MAX_PACKET_SIZE];
 
     // Create a raw socket
-    if ((sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_TCP)) == -1) {
+    if ((sockfd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL))) == -1) {      //AF_INET - SOCK_RAW - IPPROTO_TCP
+                                                                               // AF_PACKET - SOCK_RAW - htons(ETH_P_ALL)
         perror("Could not create socket");
         return 1;
     }
 
-    while (1) {
+    while (1){
         socklen_t saddr_size = sizeof(struct sockaddr);
         struct sockaddr saddr;
+        memset(&buffer, 0, MAX_PACKET_SIZE);
 
         // Receive a packet
         int data_size = recvfrom(sockfd, buffer, MAX_PACKET_SIZE, 0, &saddr, &saddr_size);
-        if (data_size == -1) {
+
+        if (data_size == -1){
             perror("Could not receive packet");
             return 1;
         }
+        // printf("data_size: %d\n", data_size);
+        // printf("Received packet\n");
+        // for (int i = 0; i < data_size; i++){
+        //     printf("%02X ", buffer[i]);
+        // }
+        // printf("\n\n\n\n");
 
         // Process the packet
         get_tls_record(buffer, data_size);
