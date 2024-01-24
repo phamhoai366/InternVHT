@@ -40,9 +40,22 @@ typedef struct __attribute__((packed)) {
     uint8_t compression_methods[1];  // Supported compression methods (variable length)
     uint16_t extensions_length;
     uint8_t extensions[1];  // Extensions (variable length)
-
 } ClientHello;
 
+typedef struct __attribute__((packed)){
+    uint16_t extension_type;
+    uint16_t extension_length;
+    uint8_t extension_data[256];
+} Extension; 
+
+typedef struct __attribute__((packed)) {
+    uint16_t type;  // 0x0000 : SNI   server name
+    uint16_t length;
+    uint16_t server_name_list_length;
+    uint8_t server_name_type;   //0x00: server name type=host_name
+    uint16_t server_name_length;
+    uint8_t server_name[256];   
+} ServerName;
 
 void get_tls_record(unsigned char* buffer, int size) {
     // Skip the Ethernet, IP and TCP headers
