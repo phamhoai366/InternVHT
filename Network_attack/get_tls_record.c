@@ -17,8 +17,6 @@
 #define MAX_PACKET_SIZE 65536
 
 void get_tls_record(unsigned char* buffer, int size);
-void parse_client_hello(unsigned char *buffer, int size);
-void get_clienthello_packet(unsigned char *buffer, int size);
 
 
 typedef struct __attribute__((packed)) {
