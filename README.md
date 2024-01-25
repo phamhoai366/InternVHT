@@ -22,5 +22,3 @@ handshake type:
 0x14: Finished
 
 
-REsult:
-![Uploading image.png…]()
