@@ -20,3 +20,7 @@ handshake type:
 0x0F: CertificateVerify
 0x10: ClientKeyExchange
 0x14: Finished
+
+
+REsult:
+![Uploading image.png…]()
