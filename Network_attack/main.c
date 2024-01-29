@@ -38,16 +38,14 @@ void get_tls_record(unsigned char* buffer, int size);
 #define MAX_PACKET_SIZE 65536
 
 /* Ethernet frame struct */
-typedef struct
-{
+typedef struct{
     uint8_t dest[MAC_ADDR_LEN]; /* destination MAC address */
     uint8_t src[MAC_ADDR_LEN];  /* source MAC address */
     uint16_t type;              /* EtherType */
 } etherheader_t;
 
 /* ARP packet struct */
-typedef struct
-{
+typedef struct{
     uint16_t htype;                     /* hardware type */
     uint16_t ptype;                     /* protocol type */
     unsigned char hlen;                 /* hardware length */
